@@ -1,4 +1,3 @@
-#[cfg(feature = "first_depleted")]
 use crate::{
     bundle::Bundle,
     contact::ContactInfo,
@@ -7,7 +6,7 @@ use crate::{
         segmentation::{BaseSegmentationManager, Segment},
     },
     errors::ASABRError,
-    types::{DataRate, Date, Duration, Priority, TimeInterval, Volume},
+    types::{DataRate, Date, Duration, Priority, TimeInterval},
 };
 
 extern crate alloc;
