@@ -257,7 +257,7 @@ mod tests {
     use crate::contact::ContactInfo;
     use crate::contact_manager::ContactManager;
     use crate::contact_manager::segmentation::Segment;
-    use crate::types::{Date, Duration};
+    use crate::types::{Date, Duration, Volume};
 
     #[derive(Debug, PartialEq, Clone)]
     enum InputSeg {
