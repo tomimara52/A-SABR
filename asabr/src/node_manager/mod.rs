@@ -8,6 +8,8 @@ use crate::{
     paths::PathFragment,
     types::{Date, NodeID, TimeInterval},
 };
+pub mod bucket_table;
+pub mod bucket_heuristic;
 pub mod delay_heuristic;
 /// Node manager implementation that applies no resource-management constraints.
 pub mod none;
