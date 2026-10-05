@@ -1,10 +1,10 @@
 use a_sabr::bundle::Bundle;
 use a_sabr::contact_manager::legacy::evl::EVLManager;
-use a_sabr::distance::{astar::AStar, sabr::SABR};
+use a_sabr::distance::sabr::SABR;
 use a_sabr::errors::ASABRError;
 use a_sabr::mk_graph;
 use a_sabr::node_manager::{delay_heuristic::DelayHeuristicManager, none::NoManagement};
-use a_sabr::pathfinding::{NodeParenting, Pathfinding};
+use a_sabr::pathfinding::{AStarNodeParenting, NodeParenting, Pathfinding};
 
 /// Every node carries a delay heuristic on top of no resource management.
 type NM = DelayHeuristicManager<NoManagement>;
@@ -20,7 +20,7 @@ fn main() -> Result<(), ASABRError> {
     mk_graph!(graph, NM, EVLManager, cp, file);
 
     let mut sabr_pathfinder = NodeParenting::<SABR>::new();
-    let mut astar_pathfinder = NodeParenting::<AStar<SABR>>::new();
+    let mut astar_pathfinder = AStarNodeParenting::<SABR>::new();
 
     let source = graph
         .node_id_ref(0.into())?

@@ -9,7 +9,7 @@ use core::{cmp::Ordering, marker::PhantomData};
 use crate::{
     bundle::Bundle,
     contact_manager::ContactManager,
-    distance::Distance,
+    distance::{Distance, astar::AStar},
     multigraph::{ContactRef, INodeRef, Multigraph, RoutableNodeRef},
     node_manager::NodeManager,
     pathfinding::{
@@ -30,8 +30,15 @@ use super::super::PathFindingOutput;
 ///
 /// * `NM` - A type that implements the `NodeManager` trait.
 /// * `CM` - A type that implements the `ContactManager` trait.
-pub type ContactParenting<'id, NM, CM, D, De> =
-    Dijkstra<ContactParentingWorkArea<'id, NM, CM, D, De>, D>;
+/// * `D` - The `Distance` comparing the paths reaching the same contact or destination.
+/// * `Q` - The `Distance` ordering the priority queue (which path is explored next).
+///   Defaults to `D`.
+pub type ContactParenting<'id, NM, CM, D, De, Q = D> =
+    Disktra<ContactParentingWorkArea<'id, NM, CM, D, De>, Q>;
+
+/// A* with contact parenting: the queue is ordered by `AStar<D>` (`g + h`), while the paths
+/// reaching the same contact or destination are compared by `D` alone
+pub type AStarContactParenting<'id, NM, CM, D, De> = ContactParenting<'id, NM, CM, D, De, AStar<D>>;
 
 /// Not intended for public use, use `ContactParenting` directly
 pub struct ContactParentingWorkArea<

@@ -17,8 +17,7 @@ use a_sabr::{
     bundle::Bundle,
     contact_manager::segmentation::seg::SegmentationManager,
     contact_plan::{
-        ContactPlan, asabr_file_lexer::parse_from_iter,
-        from_tvgutil_file::TVGUtilContactPlan,
+        ContactPlan, asabr_file_lexer::parse_from_iter, from_tvgutil_file::TVGUtilContactPlan,
     },
     distance::{astar::AStar, sabr::SABR},
     multigraph::{Multigraph, RoutableNodeRef},
@@ -26,7 +25,9 @@ use a_sabr::{
         bucket_heuristic::BucketHeuristicManager, delay_heuristic::DelayHeuristicManager,
         none::NoManagement,
     },
-    pathfinding::{ContactParenting, HybridParenting, NodeParenting, Pathfinding},
+    pathfinding::{
+        AStarNodeParenting, ContactParenting, HybridParenting, NodeParenting, Pathfinding,
+    },
     types::Date,
 };
 use criterion::{
@@ -64,7 +65,9 @@ fn read_lines(path: &str) -> impl Iterator<Item = String> {
 /// Drops the delay-heuristic row (`node <id> <name> [..]`) so nodes only carry `NoManagement`.
 fn strip_delay_row(line: String) -> String {
     match line.trim_start().starts_with("node") {
-        true => line.split_once('[').map_or(line.clone(), |(node, _)| node.to_string()),
+        true => line
+            .split_once('[')
+            .map_or(line.clone(), |(node, _)| node.to_string()),
         false => line,
     }
 }
@@ -103,7 +106,12 @@ fn tvg_scenario(
     };
     let (source, dest) = (id(source), id(dest));
     let plan: ContactPlan<NoManagement, CM> = TVGUtilContactPlan::parse(json).unwrap();
-    let time = plan.contacts.iter().map(|(c, _, _)| c.lifespan.start).min().unwrap();
+    let time = plan
+        .contacts
+        .iter()
+        .map(|(c, _, _)| c.lifespan.start)
+        .min()
+        .unwrap();
     Scenario {
         name,
         plan,
@@ -122,8 +130,16 @@ macro_rules! bench_find_path {
         } = $scenario;
         make_guard!(id);
         let mut graph = Multigraph::new(id, $plan).unwrap();
-        let source = graph.node_id_ref((*source).into()).unwrap().internal().unwrap();
-        let mut dest = graph.node_id_ref((*dest).into()).unwrap().routable().unwrap();
+        let source = graph
+            .node_id_ref((*source).into())
+            .unwrap()
+            .internal()
+            .unwrap();
+        let mut dest = graph
+            .node_id_ref((*dest).into())
+            .unwrap()
+            .routable()
+            .unwrap();
         let mut finder = <$finder>::new();
 
         let found = finder
@@ -151,41 +167,58 @@ macro_rules! bench_find_path {
     }};
 }
 
-/// `bench_find_path` with node, hybrid and contact parenting.
+/// `bench_find_path` with node, hybrid and contact parenting. `$distance` compares the
+/// paths reaching the same node (or contact), `$queue` orders the priority queue.
 macro_rules! bench_parentings {
-    ($group:expr, $label:expr, $scenario:expr, $plan:expr, $NM:ty, $distance:ty) => {{
+    ($group:expr, $label:expr, $scenario:expr, $plan:expr, $NM:ty, $distance:ty, $queue:ty) => {{
         bench_find_path!(
             $group,
             format!("Node/{}", $label),
             $scenario,
             $plan.clone(),
-            NodeParenting<$distance>
+            NodeParenting<$distance, $queue>
         );
         bench_find_path!(
             $group,
             format!("Hybrid/{}", $label),
             $scenario,
             $plan.clone(),
-            HybridParenting<$distance, $NM, CM>
+            HybridParenting<$distance, $NM, CM, $queue>
         );
         bench_find_path!(
             $group,
             format!("Contact/{}", $label),
             $scenario,
             $plan.clone(),
-            ContactParenting<$NM, CM, $distance, RoutableNodeRef>
+            ContactParenting<$NM, CM, $distance, RoutableNodeRef, $queue>
         );
     }};
 }
 
 /// SABR and bucket A* (warm, then cold with node parenting) for `scenario`.
 fn bench_scenario(group: &mut BenchmarkGroup<WallTime>, scenario: &Scenario) {
-    bench_parentings!(group, "SABR", scenario, scenario.plan, NoManagement, SABR);
+    bench_parentings!(
+        group,
+        "SABR",
+        scenario,
+        scenario.plan,
+        NoManagement,
+        SABR,
+        SABR
+    );
 
     for n_buckets in BUCKET_COUNTS {
         let bucket_plan = BucketNM::wrap_plan(scenario.plan.clone(), n_buckets);
         let label = format!("AStar-bucket{n_buckets}");
-        bench_parentings!(group, label, scenario, bucket_plan, BucketNM, AStar<SABR>);
+        bench_parentings!(
+            group,
+            label,
+            scenario,
+            bucket_plan,
+            BucketNM,
+            SABR,
+            AStar<SABR>
+        );
     }
 
     // First search with a fresh bucket table: includes computing the destination's table.
@@ -200,7 +233,7 @@ fn bench_scenario(group: &mut BenchmarkGroup<WallTime>, scenario: &Scenario) {
                     (graph, source.internal().unwrap(), dest.routable().unwrap())
                 },
                 |(graph, source, dest)| {
-                    let mut finder = NodeParenting::<AStar<SABR>>::new();
+                    let mut finder = AStarNodeParenting::<SABR>::new();
                     black_box(
                         finder
                             .find_path(graph, scenario.time, *source, &BUNDLE, dest, None)
@@ -227,7 +260,15 @@ pub fn benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group(long_delays.name);
     bench_scenario(&mut group, &long_delays);
     let delay_plan = parse_from_iter::<DelayNM, CM>(read_lines(path)).unwrap();
-    bench_parentings!(group, "AStar-delay", &long_delays, delay_plan, DelayNM, AStar<SABR>);
+    bench_parentings!(
+        group,
+        "AStar-delay",
+        &long_delays,
+        delay_plan,
+        DelayNM,
+        SABR,
+        AStar<SABR>
+    );
     group.finish();
 
     // ---- LEO Ring Roads: ground station to ground station through the cubesats ----

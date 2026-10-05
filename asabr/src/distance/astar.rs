@@ -12,8 +12,8 @@ use crate::{
 use super::Distance;
 
 /// Wrap a `Distance` metric `D` with an A* heuristic: order `PathFragment`s
-/// by `f = g + h` instead of `g` alone. `g` comes from what `D` already reads of `recv`.
-/// `h` comes from `NodeHeuristic::get_heuristic`
+/// by `f = g + h` instead of `g` alone, then by `D`. `g` is the arrival time (`recv.end`)
+/// and `h` comes from `NodeHeuristic::get_heuristic`.
 #[derive(Debug, Default)]
 pub struct AStar<D> {
     _phantom: PhantomData<D>,

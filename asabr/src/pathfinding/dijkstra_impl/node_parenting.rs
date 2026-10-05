@@ -6,7 +6,7 @@ use alloc::{vec, vec::Vec};
 use crate::{
     bundle::Bundle,
     contact_manager::ContactManager,
-    distance::Distance,
+    distance::{Distance, astar::AStar},
     multigraph::{Multigraph, RoutableNodeRef},
     node_manager::NodeManager,
     pathfinding::{
@@ -27,8 +27,15 @@ use super::super::PathFindingOutput;
 /// * `TREE` wether to calculate a full path tree or stop upon reaching the bundle first destination
 /// * `NM` - A type that implements the `NodeManager` trait.
 /// * `CM` - A type that implements the `ContactManager` trait.
-/// * `D` - A type that implements the `Distance<NM, CM>` trait.
-pub type NodeParenting<'id, D> = Dijkstra<NodeParentingWorkArea<'id, D>, D>;
+/// * `D` - A type that implements the `Distance<NM, CM>` trait, used to compare the paths
+///   reaching the same node.
+/// * `Q` - The `Distance` ordering the priority queue (which node is explored next).
+///   Defaults to `D`.
+pub type NodeParenting<'id, D, Q = D> = Disktra<NodeParentingWorkArea<'id, D>, Q>;
+
+/// A* with node parenting: the queue is ordered by `AStar<D>` (`g + h`), while the paths
+/// reaching the same node are compared by `D` alone.
+pub type AStarNodeParenting<'id, D> = NodeParenting<'id, D, AStar<D>>;
 
 /// Not intended for public use, use `NodeParenting` directly
 pub struct NodeParentingWorkArea<'id, D> {

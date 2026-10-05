@@ -120,7 +120,8 @@ macro_rules! route {
         mk_graph!(graph, NM, EVLManager, $plan, raw);
         let source = graph.node_id_ref($source.into())?.internal().unwrap();
         let mut destination = graph.node_id_ref($dest.into())?.routable().unwrap();
-        let mut finder = NodeParenting::<$distance>::new();
+        // paths reaching the same node are compared by SABR, `$distance` orders the queue
+        let mut finder = NodeParenting::<SABR, $distance>::new();
 
         // A search doesn't book resources, so it can be repeated.
         let start = Instant::now();

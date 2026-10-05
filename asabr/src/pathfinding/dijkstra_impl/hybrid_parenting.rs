@@ -7,7 +7,7 @@ use super::super::PathFindingOutput;
 use crate::{
     bundle::Bundle,
     contact_manager::ContactManager,
-    distance::Distance,
+    distance::{Distance, astar::AStar},
     multigraph::{INodeRef, Multigraph, RoutableNodeRef},
     node_manager::NodeManager,
     pathfinding::{
@@ -38,7 +38,15 @@ where
 }
 
 /// Dijkstra pathfinder using the hybrid-parenting work area.
-pub type HybridParenting<'id, D, NM, CM> = Dijkstra<HybridParentingWorkArea<'id, NM, CM, D>, D>;
+///
+/// `D` compares the paths reaching the same node, `Q` orders the priority queue (which node
+/// is explored next) and defaults to `D`.
+pub type HybridParenting<'id, D, NM, CM, Q = D> =
+    Disktra<HybridParentingWorkArea<'id, NM, CM, D>, Q>;
+
+/// A* with hybrid parenting: the queue is ordered by `AStar<D>`, while the paths
+/// reaching the same node are compared by `D` alone
+pub type AStarHybridParenting<'id, D, NM, CM> = HybridParenting<'id, D, NM, CM, AStar<D>>;
 
 /// Not intended for public use, use `HybridParenting` directly
 pub struct HybridParentingWorkArea<
