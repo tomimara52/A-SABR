@@ -31,7 +31,7 @@ use super::super::PathFindingOutput;
 ///   reaching the same node.
 /// * `Q` - The `Distance` ordering the priority queue (which node is explored next).
 ///   Defaults to `D`.
-pub type NodeParenting<'id, D, Q = D> = Disktra<NodeParentingWorkArea<'id, D>, Q>;
+pub type NodeParenting<'id, D, Q = D> = Dijkstra<NodeParentingWorkArea<'id, D>, Q>;
 
 /// A* with node parenting: the queue is ordered by `AStar<D>` (`g + h`), while the paths
 /// reaching the same node are compared by `D` alone.

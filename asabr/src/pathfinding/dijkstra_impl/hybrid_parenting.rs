@@ -42,7 +42,7 @@ where
 /// `D` compares the paths reaching the same node, `Q` orders the priority queue (which node
 /// is explored next) and defaults to `D`.
 pub type HybridParenting<'id, D, NM, CM, Q = D> =
-    Disktra<HybridParentingWorkArea<'id, NM, CM, D>, Q>;
+    Dijkstra<HybridParentingWorkArea<'id, NM, CM, D>, Q>;
 
 /// A* with hybrid parenting: the queue is ordered by `AStar<D>`, while the paths
 /// reaching the same node are compared by `D` alone
