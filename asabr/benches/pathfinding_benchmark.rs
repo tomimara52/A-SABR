@@ -4,41 +4,35 @@
 //! Plans:
 //! - `100.cp`: long contacts with long delays, with a delay-heuristic row per node.
 //! - tvgutil LEO Ring Roads (cubesats + ground stations, short passes), routed from the
-//!   first to the last ground station: `sample1.json` with its delays zeroed, and the
-//!   scenarios of `leo_scenarios/` (see its README). They have no delay matrix, so only the
-//!   bucket heuristic is benchmarked on them.
+//!   first to the last ground station (see `common::LEO_PLANS`). They have no delay matrix,
+//!   so only the bucket heuristic is benchmarked on them.
+//!
+//! This uses a single query per plan; `query_sweep` samples many.
+//!
+//! With the `stats` feature (`cargo bench --bench pathfinding_benchmark --features stats`),
+//! the expansions of one warm search of each benchmark are also counted, printed as a table
+//! per plan and written to `target/criterion/expansions.csv`.
 
-use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-};
+mod common;
 
 use a_sabr::{
     bundle::Bundle,
-    contact_manager::segmentation::seg::SegmentationManager,
-    contact_plan::{
-        ContactPlan, asabr_file_lexer::parse_from_iter, from_tvgutil_file::TVGUtilContactPlan,
-    },
+    contact_plan::ContactPlan,
     distance::{astar::AStar, sabr::SABR},
     multigraph::{Multigraph, RoutableNodeRef},
-    node_manager::{
-        bucket_heuristic::BucketHeuristicManager, delay_heuristic::DelayHeuristicManager,
-        none::NoManagement,
-    },
+    node_manager::{bucket_heuristic::BucketHeuristicManager, none::NoManagement},
     pathfinding::{
         AStarNodeParenting, ContactParenting, HybridParenting, NodeParenting, Pathfinding,
     },
     types::Date,
 };
+use common::{CM, DelayNM};
 use criterion::{
     BatchSize, BenchmarkGroup, Criterion, black_box, criterion_group, criterion_main,
     measurement::WallTime,
 };
 use generativity::make_guard;
-use serde_json::Value;
 
-type CM = SegmentationManager;
-type DelayNM = DelayHeuristicManager<NoManagement>;
 type BucketNM = BucketHeuristicManager<NoManagement>;
 
 const BUNDLE: Bundle = Bundle {
@@ -46,7 +40,7 @@ const BUNDLE: Bundle = Bundle {
     size: 1_000,
     expiration: 24060,
 };
-const BUCKET_COUNTS: [usize; 3] = [64, 256, 1024];
+const BUCKET_COUNTS: [usize; 5] = [64, 256, 512, 1024, 4096];
 
 /// A search to benchmark: plan, source and destination node IDs, and routing time.
 struct Scenario {
@@ -57,76 +51,88 @@ struct Scenario {
     time: Date,
 }
 
-fn read_lines(path: &str) -> impl Iterator<Item = String> {
-    let file = File::open(path).unwrap();
-    BufReader::new(file).lines().map(|l| l.unwrap())
-}
-
-/// Drops the delay-heuristic row (`node <id> <name> [..]`) so nodes only carry `NoManagement`.
-fn strip_delay_row(line: String) -> String {
-    match line.trim_start().starts_with("node") {
-        true => line
-            .split_once('[')
-            .map_or(line.clone(), |(node, _)| node.to_string()),
-        false => line,
-    }
-}
-
-/// Routing from ground station `source` to `dest` on the tvgutil P-TVG at `path`,
-/// starting at the first contact. With `zero_delays`, every contact delay is set to 0.
-fn tvg_scenario(
-    name: &'static str,
-    path: &str,
-    source: &str,
-    dest: &str,
-    zero_delays: bool,
-) -> Scenario {
-    let file = File::open(path).unwrap();
-    let mut json: Value = serde_json::from_reader(BufReader::new(file)).unwrap();
-    if zero_delays {
-        // contact = [tx, rx, start, end, [[_, confidence, [[start, rate, delay], ..]], ..]]
-        for edge in json["edges"].as_array_mut().unwrap() {
-            for contact in edge["contacts"].as_array_mut().unwrap() {
-                for generation in contact[4].as_array_mut().unwrap() {
-                    for characteristic in generation[2].as_array_mut().unwrap() {
-                        characteristic[2] = 0.0.into();
-                    }
-                }
-            }
-        }
-    }
-    // node names are only kept with the "debug" feature: the parser numbers the
-    // vertices in the order of the JSON object, so look them up there
-    let vertices = json["vertices"].as_object().unwrap();
-    let id = |node: &str| {
-        vertices
-            .keys()
-            .position(|k| k == node)
-            .unwrap_or_else(|| panic!("{name}: no node {node}"))
-    };
-    let (source, dest) = (id(source), id(dest));
-    let plan: ContactPlan<NoManagement, CM> = TVGUtilContactPlan::parse(json).unwrap();
-    let time = plan
-        .contacts
-        .iter()
-        .map(|(c, _, _)| c.lifespan.start)
-        .min()
+/// Routing from ground station `source` to `dest` on the LEO plan `name` (see
+/// `common::LEO_PLANS`), starting at the first contact.
+fn tvg_scenario(name: &'static str, source: &str, dest: &str) -> Scenario {
+    let (_, path, zero_delays) = common::LEO_PLANS
+        .into_iter()
+        .find(|(n, ..)| *n == name)
         .unwrap();
+    let (plan, names) = common::load_tvg(path, zero_delays);
     Scenario {
         name,
+        source: common::node_index(&names, source),
+        dest: common::node_index(&names, dest),
+        time: common::plan_span(&plan).0,
         plan,
-        source,
-        dest,
-        time,
     }
+}
+
+/// Expansions of one search of each benchmark: (plan, benchmark, expansions).
+#[cfg(feature = "stats")]
+static EXPANSIONS: std::sync::Mutex<Vec<(&str, String, usize)>> = std::sync::Mutex::new(Vec::new());
+
+/// Prints the expansions of each plan as a table (parenting x pathfinder) and writes them
+/// all to `expansions.csv`, next to the criterion reports.
+#[cfg(feature = "stats")]
+fn report_expansions() {
+    use std::fmt::Write as _;
+
+    let expansions = EXPANSIONS.lock().unwrap();
+    let mut plans: Vec<&str> = expansions.iter().map(|(plan, ..)| *plan).collect();
+    plans.dedup();
+    let mut csv = String::from("plan,parenting,pathfinder,expanded\n");
+    for plan in plans {
+        // (pathfinder, expansions of node, hybrid and contact parenting), in run order
+        let mut rows: Vec<(&str, [Option<usize>; 3])> = Vec::new();
+        for (_, name, count) in expansions.iter().filter(|(p, ..)| *p == plan) {
+            let (parenting, pathfinder) = name.split_once('/').unwrap();
+            let col = ["Node", "Hybrid", "Contact"]
+                .iter()
+                .position(|p| *p == parenting)
+                .unwrap();
+            let row = match rows.iter().position(|(p, _)| *p == pathfinder) {
+                Some(row) => row,
+                None => {
+                    rows.push((pathfinder, [None; 3]));
+                    rows.len() - 1
+                }
+            };
+            rows[row].1[col] = Some(*count);
+            writeln!(csv, "{plan},{parenting},{pathfinder},{count}").unwrap();
+        }
+        println!("\nExpanded nodes / labels, {plan}:");
+        println!("{:<20}{:>10}{:>10}{:>10}", "", "Node", "Hybrid", "Contact");
+        for (pathfinder, counts) in rows {
+            let counts = counts.map(|c| c.map_or("-".to_string(), |c| c.to_string()));
+            println!(
+                "{pathfinder:<20}{:>10}{:>10}{:>10}",
+                counts[0], counts[1], counts[2]
+            );
+        }
+    }
+    // the bench runs from target/<profile>/deps/
+    let path = std::env::current_exe()
+        .unwrap()
+        .ancestors()
+        .nth(3)
+        .unwrap()
+        .join("criterion/expansions.csv");
+    std::fs::write(&path, csv).unwrap();
+    println!("\nwritten to {}", path.display());
 }
 
 /// Benchmarks repeated searches of `$finder` for `$scenario`, on `$plan`.
-/// One search is done beforehand, so lazily computed heuristics are warm.
+/// One search is done beforehand, so lazily computed heuristics are warm. With the `stats`
+/// feature, a second one counts the expansions.
 macro_rules! bench_find_path {
     ($group:expr, $name:expr, $scenario:expr, $plan:expr, $finder:ty) => {{
         let Scenario {
-            source, dest, time, ..
+            name: plan_name,
+            source,
+            dest,
+            time,
+            ..
         } = $scenario;
         make_guard!(id);
         let mut graph = Multigraph::new(id, $plan).unwrap();
@@ -147,6 +153,21 @@ macro_rules! bench_find_path {
             .unwrap()
             .is_some();
         assert!(found, "{}: no route", $name);
+
+        #[cfg(feature = "stats")]
+        {
+            a_sabr::pathfinding::dijkstra::stats::reset();
+            finder
+                .find_path(&mut graph, *time, source, &BUNDLE, &mut dest, None)
+                .unwrap();
+            let expanded = a_sabr::pathfinding::dijkstra::stats::expanded();
+            EXPANSIONS
+                .lock()
+                .unwrap()
+                .push((*plan_name, $name.to_string(), expanded));
+        }
+        #[cfg(not(feature = "stats"))]
+        let _ = plan_name;
 
         $group.bench_function($name, |b| {
             b.iter(|| {
@@ -249,17 +270,16 @@ fn bench_scenario(group: &mut BenchmarkGroup<WallTime>, scenario: &Scenario) {
 
 pub fn benchmark(c: &mut Criterion) {
     // ---- 100.cp ----
-    let path = "benches/astar_graphs/100.cp";
     let long_delays = Scenario {
         name: "100cp",
-        plan: parse_from_iter(read_lines(path).map(strip_delay_row)).unwrap(),
+        plan: common::load_100cp(),
         source: 0,
         dest: 60,
         time: 60,
     };
     let mut group = c.benchmark_group(long_delays.name);
     bench_scenario(&mut group, &long_delays);
-    let delay_plan = parse_from_iter::<DelayNM, CM>(read_lines(path)).unwrap();
+    let delay_plan = common::load_100cp_delay();
     bench_parentings!(
         group,
         "AStar-delay",
@@ -272,33 +292,28 @@ pub fn benchmark(c: &mut Criterion) {
     group.finish();
 
     // ---- LEO Ring Roads: ground station to ground station through the cubesats ----
-    // sample1.json has non-physical delays (up to ~5400 s, even on ISLs): zero them
-    let mut leo = vec![tvg_scenario(
-        "sample1",
-        "benches/ptvg_files/sample1.json",
-        "gs00",
-        "gs39",
-        true,
-    )];
-    // (name, first ground station, last ground station), generated by
-    // leo_scenarios/generate.sh. IDs are zero-padded to the width of the largest index,
-    // so up to 10 ground stations they have a single digit.
-    for (name, source, dest) in [
+    // (name, first ground station, last ground station). IDs are zero-padded to the width
+    // of the largest index, so up to 10 ground stations they have a single digit.
+    let leo: Vec<Scenario> = [
+        ("sample1", "gs00", "gs39"),
         ("rr0_s40_g40", "gs00", "gs39"),
         ("rrs_s40_g40", "gs00", "gs39"),
         ("rrs_s80_g20", "gs00", "gs19"),
         ("rrs_s80_g80", "gs00", "gs79"),
         ("rrs_s80_g05", "gs0", "gs4"),
         ("rrs_s80_g10", "gs0", "gs9"),
-    ] {
-        let path = format!("benches/leo_scenarios/{name}.json");
-        leo.push(tvg_scenario(name, &path, source, dest, false));
-    }
+    ]
+    .into_iter()
+    .map(|(name, source, dest)| tvg_scenario(name, source, dest))
+    .collect();
     for scenario in &leo {
         let mut group = c.benchmark_group(scenario.name);
         bench_scenario(&mut group, scenario);
         group.finish();
     }
+
+    #[cfg(feature = "stats")]
+    report_expansions();
 }
 
 criterion_group! {
