@@ -5,9 +5,11 @@ use alloc::vec::Vec;
 mod contact_parenting;
 mod hybrid_parenting;
 mod node_parenting;
-pub use contact_parenting::{AStarContactParenting, ContactParenting};
-pub use hybrid_parenting::{AStarHybridParenting, HybridParenting, HybridParentingOrd};
-pub use node_parenting::{AStarNodeParenting, NodeParenting};
+pub use contact_parenting::{AStarContactParenting, ContactParenting, ContactParentingWorkArea};
+pub use hybrid_parenting::{
+    AStarHybridParenting, HybridParenting, HybridParentingOrd, HybridParentingWorkArea,
+};
+pub use node_parenting::{AStarNodeParenting, NodeParenting, NodeParentingWorkArea};
 
 use crate::{parsing::Either, pathfinding::PathFindingOutput, paths::PathFragment};
 

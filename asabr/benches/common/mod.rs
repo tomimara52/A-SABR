@@ -1,17 +1,27 @@
-//! Contact plans shared by the pathfinding benchmarks.
+//! Contact plans and expansion counting shared by the pathfinding benchmarks.
 #![allow(dead_code)]
 
 use std::{
+    cell::Cell,
     fs::File,
     io::{BufRead, BufReader},
 };
 
 use a_sabr::{
-    contact_manager::segmentation::seg::SegmentationManager,
+    bundle::Bundle,
+    contact_manager::{ContactManager, segmentation::seg::SegmentationManager},
     contact_plan::{
         ContactPlan, asabr_file_lexer::parse_from_iter, from_tvgutil_file::TVGUtilContactPlan,
     },
-    node_manager::{delay_heuristic::DelayHeuristicManager, none::NoManagement},
+    multigraph::{INodeRef, Multigraph, RoutableNodeRef},
+    node_manager::{NodeManager, delay_heuristic::DelayHeuristicManager, none::NoManagement},
+    pathfinding::{
+        ContactParentingWorkArea, HybridParentingWorkArea, NodeParentingWorkArea,
+        PathFindingOutput,
+        destination::FindableDest,
+        dijkstra::{Dijkstra, DijkstraWorkspace},
+    },
+    paths::PathFragment,
     types::Date,
 };
 use serde_json::Value;
@@ -127,3 +137,79 @@ pub fn plan_span<NM: a_sabr::node_manager::NodeManager>(
     let end = plan.contacts.iter().map(|(c, ..)| c.lifespan.end).max();
     (start.unwrap(), end.unwrap())
 }
+
+thread_local! {
+    static EXPANDED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Number of expansions counted by `Counting` since the last `reset_expanded`, for one
+/// search: `dijkstra` stops when it pops the destination, without expanding it, but
+/// `Counting` already counted that pop, so it is removed when `reached_dest`.
+pub fn expanded(reached_dest: bool) -> usize {
+    EXPANDED.get() - usize::from(reached_dest)
+}
+
+/// Sets the expansion counter back to 0.
+pub fn reset_expanded() {
+    EXPANDED.set(0);
+}
+
+/// Dijkstra work area `W` that counts the popped paths that are still relevant and reach a
+/// real node: `dijkstra` explores their neighbors (expands them), except for the
+/// destination (see `expanded`). With node parenting it counts nodes, with contact /
+/// hybrid parenting it counts labels.
+pub struct Counting<W>(W);
+
+impl<'id, NM, CM, De, W> DijkstraWorkspace<'id, NM, CM, De> for Counting<W>
+where
+    NM: NodeManager,
+    CM: ContactManager,
+    De: FindableDest<'id, NM, CM>,
+    W: DijkstraWorkspace<'id, NM, CM, De>,
+{
+    fn new(graph: &Multigraph<'id, NM, CM>) -> Self {
+        Self(W::new(graph))
+    }
+
+    fn into_pathfinding_output<'a>(self) -> PathFindingOutput<'id, 'a> {
+        self.0.into_pathfinding_output()
+    }
+
+    fn try_insert(
+        &mut self,
+        proposition: PathFragment<'id>,
+        node: RoutableNodeRef<'id>,
+        graph: &Multigraph<'id, NM, CM>,
+        bundle: &Bundle,
+        dest: &De,
+    ) -> Option<usize> {
+        self.0.try_insert(proposition, node, graph, bundle, dest)
+    }
+
+    fn node_check(&mut self, node: RoutableNodeRef<'id>, graph: &Multigraph<'id, NM, CM>) -> bool {
+        self.0.node_check(node, graph)
+    }
+
+    fn poped_relevant_new(
+        &mut self,
+        frag: PathFragment<'id>,
+        node: RoutableNodeRef<'id>,
+        viaref: usize,
+    ) -> (bool, bool, Option<INodeRef<'id>>) {
+        let result = self.0.poped_relevant_new(frag, node, viaref);
+        // `dijkstra` only explores the neighbors of relevant paths to real nodes
+        if result.0 && matches!(node, RoutableNodeRef::I(_)) {
+            EXPANDED.set(EXPANDED.get() + 1);
+        }
+        result
+    }
+}
+
+/// `NodeParenting` counting its expansions.
+pub type CountedNodeParenting<'id, D, Q = D> = Dijkstra<Counting<NodeParentingWorkArea<'id, D>>, Q>;
+/// `HybridParenting` counting its expansions.
+pub type CountedHybridParenting<'id, D, NM, CM, Q = D> =
+    Dijkstra<Counting<HybridParentingWorkArea<'id, NM, CM, D>>, Q>;
+/// `ContactParenting` counting its expansions.
+pub type CountedContactParenting<'id, NM, CM, D, De, Q = D> =
+    Dijkstra<Counting<ContactParentingWorkArea<'id, NM, CM, D, De>>, Q>;

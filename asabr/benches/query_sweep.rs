@@ -2,7 +2,7 @@
 //! pathfinder, and records per query the arrival time, the expansions and the search time.
 //! Unlike `pathfinding_benchmark`, it does not use criterion: each search is timed directly.
 //!
-//! `cargo bench --bench query_sweep --features stats`
+//! `cargo bench --bench query_sweep`
 //!
 //! Environment variables:
 //! - `SWEEP_QUERIES` (default 100): queries per plan.
@@ -16,7 +16,8 @@
 //!
 //! Each query is searched once with the bucket table of its destination possibly not yet
 //! computed (`first_ns`, and `first_to_dest` if it was the first query to that destination
-//! on that graph), then `SWEEP_REPS` times warm (`warm_ns`, median).
+//! on that graph), then `SWEEP_REPS` times warm (`warm_ns`, median). The expansions are
+//! counted on one more, untimed, search (see `common::Counting`).
 //! The rows are written to `target/query_sweep.csv`, and a summary per plan is printed:
 //! medians over the queries with a route, and arrival-time mismatches with SABR (an
 //! admissible heuristic must never give a later arrival).
@@ -31,10 +32,10 @@ use a_sabr::{
     distance::{astar::AStar, sabr::SABR},
     multigraph::{Multigraph, RoutableNodeRef},
     node_manager::{NodeManager, bucket_heuristic::BucketHeuristicManager, none::NoManagement},
-    pathfinding::{ContactParenting, HybridParenting, NodeParenting, Pathfinding, dijkstra::stats},
+    pathfinding::{ContactParenting, HybridParenting, NodeParenting, Pathfinding},
     types::Date,
 };
-use common::{CM, DelayNM};
+use common::{CM, CountedContactParenting, CountedHybridParenting, CountedNodeParenting, DelayNM};
 use generativity::make_guard;
 
 type BucketNM = BucketHeuristicManager<NoManagement>;
@@ -113,11 +114,13 @@ fn median(values: &mut [u128]) -> u128 {
 }
 
 /// Runs every query of `$queries` on `$plan` with `$finder`, appending a `Row` per query.
+/// `$counted` is the same pathfinder counting its expansions, kept out of the timings.
 macro_rules! sweep {
-    ($rows:expr, $reps:expr, $plan_name:expr, $queries:expr, $plan:expr, $label:expr, $parenting:expr, $finder:ty) => {{
+    ($rows:expr, $reps:expr, $plan_name:expr, $queries:expr, $plan:expr, $label:expr, $parenting:expr, $finder:ty, $counted:ty) => {{
         make_guard!(id);
         let mut graph = Multigraph::new(id, $plan).unwrap();
         let mut finder = <$finder>::new();
+        let mut counted = <$counted>::new();
         let mut seen_dests = HashSet::new();
         for (index, query) in $queries.iter().enumerate() {
             let source = graph
@@ -131,13 +134,11 @@ macro_rules! sweep {
                 .routable()
                 .unwrap();
 
-            stats::reset();
             let start = Instant::now();
             let output = finder
                 .find_path(&mut graph, query.time, source, &BUNDLE, &mut dest, None)
                 .unwrap();
             let first_ns = start.elapsed().as_nanos();
-            let expanded = stats::expanded();
             let arrival = output
                 .as_ref()
                 .and_then(|o| o.full_path_rev(dest, &graph))
@@ -155,6 +156,12 @@ macro_rules! sweep {
                     start.elapsed().as_nanos()
                 })
                 .collect();
+
+            common::reset_expanded();
+            counted
+                .find_path(&mut graph, query.time, source, &BUNDLE, &mut dest, None)
+                .unwrap();
+            let expanded = common::expanded(arrival.is_some());
 
             $rows.push(Row {
                 plan: $plan_name,
@@ -177,11 +184,13 @@ macro_rules! sweep {
 macro_rules! sweep_parentings {
     ($rows:expr, $reps:expr, $plan_name:expr, $queries:expr, $plan:expr, $label:expr, $NM:ty, $queue:ty) => {{
         sweep!($rows, $reps, $plan_name, $queries, $plan, $label, "Node",
-            NodeParenting<SABR, $queue>);
+            NodeParenting<SABR, $queue>, CountedNodeParenting<SABR, $queue>);
         sweep!($rows, $reps, $plan_name, $queries, $plan, $label, "Hybrid",
-            HybridParenting<SABR, $NM, CM, $queue>);
+            HybridParenting<SABR, $NM, CM, $queue>,
+            CountedHybridParenting<SABR, $NM, CM, $queue>);
         sweep!($rows, $reps, $plan_name, $queries, $plan, $label, "Contact",
-            ContactParenting<$NM, CM, SABR, RoutableNodeRef, $queue>);
+            ContactParenting<$NM, CM, SABR, RoutableNodeRef, $queue>,
+            CountedContactParenting<$NM, CM, SABR, RoutableNodeRef, $queue>);
     }};
 }
 

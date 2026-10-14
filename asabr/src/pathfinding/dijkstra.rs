@@ -14,30 +14,6 @@ use crate::{
     types::Date,
 };
 
-/// Search statistics, gathered only with the `stats` feature.
-#[cfg(feature = "stats")]
-pub mod stats {
-    use core::sync::atomic::{AtomicUsize, Ordering};
-
-    static EXPANDED: AtomicUsize = AtomicUsize::new(0);
-
-    /// Number of expansions (relevant paths popped and extended to their neighbors)
-    /// done by `dijkstra` since the last `reset`, over all searches and threads.
-    /// With node parenting it counts nodes, with contact / hybrid parenting it counts labels.
-    pub fn expanded() -> usize {
-        EXPANDED.load(Ordering::Relaxed)
-    }
-
-    /// Sets the expansion counter back to 0.
-    pub fn reset() {
-        EXPANDED.store(0, Ordering::Relaxed);
-    }
-
-    pub(super) fn count_expansion() {
-        EXPANDED.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
 /// Trait defining a custom DisktraWorkspace.
 /// implementing Pathfinding for T can then be done simply using the disktra function.
 pub trait DijkstraWorkspace<'id, NM: NodeManager, CM: ContactManager, De: FindableDest<'id, NM, CM>>
@@ -125,8 +101,6 @@ pub fn dijkstra<
         }
 
         if isvnode.is_none() && relevant {
-            #[cfg(feature = "stats")]
-            stats::count_expansion();
             let node = unsafe { path.rx_node.internal().unwrap_unchecked() };
             let (current_node, iter_r, iter_v) = multigraph.iter_iter_contacts(node, prune_time);
 

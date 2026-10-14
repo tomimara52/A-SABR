@@ -24,8 +24,6 @@ debug = []
 contact_suppression = []
 first_depleted = ["contact_suppression"]
 manual_queueing = []
-# counts the expansions of the pathfinding (see `pathfinding::dijkstra::stats`)
-stats = []
 
 [dev-dependencies]
 criterion = "0.3"
@@ -42,7 +40,6 @@ harness = false
 [[bench]]
 name = "query_sweep"
 harness = false
-required-features = ["stats"]
 
 [[example]]
 name = "dijkstra_accuracy"

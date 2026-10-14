@@ -9,9 +9,9 @@
 //!
 //! This uses a single query per plan; `query_sweep` samples many.
 //!
-//! With the `stats` feature (`cargo bench --bench pathfinding_benchmark --features stats`),
-//! the expansions of one warm search of each benchmark are also counted, printed as a table
-//! per plan and written to `target/criterion/expansions.csv`.
+//! The expansions of one warm search of each benchmark are also counted (outside of the
+//! timings, see `common::Counting`), printed as a table per plan and written to
+//! `target/criterion/expansions.csv`.
 
 mod common;
 
@@ -26,7 +26,7 @@ use a_sabr::{
     },
     types::Date,
 };
-use common::{CM, DelayNM};
+use common::{CM, CountedContactParenting, CountedHybridParenting, CountedNodeParenting, DelayNM};
 use criterion::{
     BatchSize, BenchmarkGroup, Criterion, black_box, criterion_group, criterion_main,
     measurement::WallTime,
@@ -69,12 +69,10 @@ fn tvg_scenario(name: &'static str, source: &str, dest: &str) -> Scenario {
 }
 
 /// Expansions of one search of each benchmark: (plan, benchmark, expansions).
-#[cfg(feature = "stats")]
 static EXPANSIONS: std::sync::Mutex<Vec<(&str, String, usize)>> = std::sync::Mutex::new(Vec::new());
 
 /// Prints the expansions of each plan as a table (parenting x pathfinder) and writes them
 /// all to `expansions.csv`, next to the criterion reports.
-#[cfg(feature = "stats")]
 fn report_expansions() {
     use std::fmt::Write as _;
 
@@ -123,10 +121,10 @@ fn report_expansions() {
 }
 
 /// Benchmarks repeated searches of `$finder` for `$scenario`, on `$plan`.
-/// One search is done beforehand, so lazily computed heuristics are warm. With the `stats`
-/// feature, a second one counts the expansions.
+/// One search is done beforehand, so lazily computed heuristics are warm, then a second one
+/// with `$counted` (the same pathfinder counting its expansions) counts the expansions.
 macro_rules! bench_find_path {
-    ($group:expr, $name:expr, $scenario:expr, $plan:expr, $finder:ty) => {{
+    ($group:expr, $name:expr, $scenario:expr, $plan:expr, $finder:ty, $counted:ty) => {{
         let Scenario {
             name: plan_name,
             source,
@@ -154,20 +152,16 @@ macro_rules! bench_find_path {
             .is_some();
         assert!(found, "{}: no route", $name);
 
-        #[cfg(feature = "stats")]
-        {
-            a_sabr::pathfinding::dijkstra::stats::reset();
-            finder
-                .find_path(&mut graph, *time, source, &BUNDLE, &mut dest, None)
-                .unwrap();
-            let expanded = a_sabr::pathfinding::dijkstra::stats::expanded();
-            EXPANSIONS
-                .lock()
-                .unwrap()
-                .push((*plan_name, $name.to_string(), expanded));
-        }
-        #[cfg(not(feature = "stats"))]
-        let _ = plan_name;
+        common::reset_expanded();
+        let reached = <$counted>::new()
+            .find_path(&mut graph, *time, source, &BUNDLE, &mut dest, None)
+            .unwrap()
+            .and_then(|output| output.full_path_rev(dest, &graph).map(|_| ()))
+            .is_some();
+        EXPANSIONS
+            .lock()
+            .unwrap()
+            .push((*plan_name, $name.to_string(), common::expanded(reached)));
 
         $group.bench_function($name, |b| {
             b.iter(|| {
@@ -197,21 +191,24 @@ macro_rules! bench_parentings {
             format!("Node/{}", $label),
             $scenario,
             $plan.clone(),
-            NodeParenting<$distance, $queue>
+            NodeParenting<$distance, $queue>,
+            CountedNodeParenting<$distance, $queue>
         );
         bench_find_path!(
             $group,
             format!("Hybrid/{}", $label),
             $scenario,
             $plan.clone(),
-            HybridParenting<$distance, $NM, CM, $queue>
+            HybridParenting<$distance, $NM, CM, $queue>,
+            CountedHybridParenting<$distance, $NM, CM, $queue>
         );
         bench_find_path!(
             $group,
             format!("Contact/{}", $label),
             $scenario,
             $plan.clone(),
-            ContactParenting<$NM, CM, $distance, RoutableNodeRef, $queue>
+            ContactParenting<$NM, CM, $distance, RoutableNodeRef, $queue>,
+            CountedContactParenting<$NM, CM, $distance, RoutableNodeRef, $queue>
         );
     }};
 }
@@ -312,7 +309,6 @@ pub fn benchmark(c: &mut Criterion) {
         group.finish();
     }
 
-    #[cfg(feature = "stats")]
     report_expansions();
 }
 
