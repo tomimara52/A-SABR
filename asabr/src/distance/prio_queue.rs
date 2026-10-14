@@ -7,10 +7,15 @@ use alloc::vec::Vec;
 use crate::{
     bundle::Bundle, contact_manager::ContactManager, distance::Distance, multigraph::Multigraph,
     node_manager::NodeManager, pathfinding::destination::FindableDest, paths::PathFragment,
+    types::Date,
 };
 
+/// Element of the queue and its priority (`Distance::queue_priority`).
+type Entry<'id, T> = ((PathFragment<'id>, T), Date);
+
 /// A custom if fairly classical implementation of a priority queue using a binary heap, allowing to pass a reference to the graph in order to compare elements
-/// This is a min priority queue respective to the distance D
+/// This is a min priority queue respective to the distance D: elements are ordered by
+/// `D::queue_priority`, computed once when they are inserted, then by `D::cmp`
 #[derive(Debug, Default)]
 pub struct PrioQueue<
     'id,
@@ -20,8 +25,8 @@ pub struct PrioQueue<
     De: FindableDest<'id, NM, CM>,
     T: Copy,
 > {
-    /// Triplet pathfragment, node reached by it, custom aditional data
-    elts: Vec<(PathFragment<'id>, T)>,
+    /// Pathfragment and custom aditional data, with their priority
+    elts: Vec<Entry<'id, T>>,
     #[allow(clippy::complexity)]
     _phantom: PhantomData<fn(&'id (), D, NM, CM, De)>,
 }
@@ -62,6 +67,20 @@ impl<
             _phantom: PhantomData,
         }
     }
+    /// Orders two entries by priority, then by `D::cmp`.
+    #[inline(always)]
+    fn cmp(
+        first: &Entry<'id, T>,
+        second: &Entry<'id, T>,
+        graph: &Multigraph<'id, NM, CM>,
+        bundle: &Bundle,
+        dest: &De,
+    ) -> Ordering {
+        first
+            .1
+            .cmp(&second.1)
+            .then_with(|| D::cmp(&first.0.0, &second.0.0, graph, bundle, dest))
+    }
     #[inline(always)]
     fn left_child(&self, i: usize) -> Option<usize> {
         let child = left_child(i);
@@ -90,10 +109,11 @@ impl<
         bundle: &Bundle,
         dest: &De,
     ) {
+        let elt = (elt, D::queue_priority(&elt.0, graph, bundle, dest));
         let mut id = self.elts.len();
         self.elts.push(elt);
         while let Some(parent) = parent(id)
-            && D::cmp_queue(&self.elts[parent].0, &elt.0, graph, bundle, dest) == Ordering::Greater
+            && Self::cmp(&self.elts[parent], &elt, graph, bundle, dest) == Ordering::Greater
         {
             self.elts[id] = self.elts[parent];
             id = parent;
@@ -103,7 +123,7 @@ impl<
     /// Check the minimum element
     #[inline(always)]
     pub fn peek_min(&self) -> Option<&(PathFragment<'id>, T)> {
-        self.elts.first()
+        self.elts.first().map(|(elt, _)| elt)
     }
     /// Pop the minimum element, returning it. Reorganize the queue according to the distance D, requiring a reference to the graph to do the comparison.
     /// It is obviously a logic error to change the multigraph in a way wich change the distance while having a live queue
@@ -119,7 +139,7 @@ impl<
 
             None
         } else {
-            let ret = self.elts[0];
+            let (ret, _) = self.elts[0];
             let fst = self.elts.pop().unwrap();
             if !self.elts.is_empty() {
                 let mut id = 0;
@@ -130,7 +150,7 @@ impl<
                             break;
                         }
                         (Some(left), None) => {
-                            if D::cmp_queue(&self.elts[left].0, &fst.0, graph, bundle, dest)
+                            if Self::cmp(&self.elts[left], &fst, graph, bundle, dest)
                                 == Ordering::Less
                             {
                                 self.elts[id] = self.elts[left];
@@ -141,9 +161,9 @@ impl<
                             break;
                         }
                         (Some(left), Some(right)) => {
-                            let min = if D::cmp_queue(
-                                &self.elts[left].0,
-                                &self.elts[right].0,
+                            let min = if Self::cmp(
+                                &self.elts[left],
+                                &self.elts[right],
                                 graph,
                                 bundle,
                                 dest,
@@ -153,7 +173,7 @@ impl<
                             } else {
                                 right
                             };
-                            if D::cmp_queue(&self.elts[min].0, &fst.0, graph, bundle, dest)
+                            if Self::cmp(&self.elts[min], &fst, graph, bundle, dest)
                                 == Ordering::Less
                             {
                                 self.elts[id] = self.elts[min];

@@ -5,6 +5,7 @@ use core::cmp::Ordering;
 use crate::{
     bundle::Bundle, contact_manager::ContactManager, multigraph::Multigraph,
     node_manager::NodeManager, pathfinding::destination::FindableDest, paths::PathFragment,
+    types::Date,
 };
 
 /// A* heuristic wrapper around another `Distance` metric.
@@ -52,19 +53,20 @@ where
         destination: &D,
     ) -> Ordering;
 
-    /// Compares two `RouteStage` instances to order the priority queue.
+    /// Priority of a path in the priority queue (smallest first), computed once when the
+    /// path is inserted. Paths of equal priority are ordered by `cmp`.
     ///
-    /// This method is used to decide which path is expanded first. `cmp` and `cmp_queue` only
-    /// differ in distances that order the exploration differently, like `AStar`.
-    /// Defaults to `cmp`.
-    fn cmp_queue(
-        first: &PathFragment<'id>,
-        second: &PathFragment<'id>,
-        graph: &Multigraph<'id, NM, CM>,
-        bundle: &Bundle,
-        destination: &D,
-    ) -> Ordering {
-        Self::cmp(first, second, graph, bundle, destination)
+    /// This is used to decide which path is expanded first: it only matters for distances
+    /// that order the exploration differently from `cmp`, like `AStar`.
+    /// Defaults to 0, so that only `cmp` orders the queue.
+    #[inline(always)]
+    fn queue_priority(
+        _path: &PathFragment<'id>,
+        _graph: &Multigraph<'id, NM, CM>,
+        _bundle: &Bundle,
+        _destination: &D,
+    ) -> Date {
+        0
     }
 }
 

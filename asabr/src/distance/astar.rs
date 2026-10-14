@@ -7,13 +7,14 @@ use crate::{
     node_manager::{NodeHeuristic, NodeManager},
     pathfinding::{HybridParentingOrd, destination::FindableDest},
     paths::PathFragment,
+    types::Date,
 };
 
 use super::Distance;
 
 /// Wrap a `Distance` metric `D` with an A* heuristic: order `PathFragment`s
 /// by `f = g + h` instead of `g` alone, then by `D`. `g` is the arrival time (`recv.end`)
-/// and `h` comes from `NodeHeuristic::get_heuristic`.
+/// and `h` comes from `NodeHeuristic::get_heuristic`, evaluated once per queued path.
 #[derive(Debug, Default)]
 pub struct AStar<D> {
     _phantom: PhantomData<D>,
@@ -40,32 +41,24 @@ impl<
         D::cmp(first, second, graph, bundle, destination)
     }
 
-    /// The queue is ordered by `f = g + h`. Ties on `f` go to the smaller `g` (via `D`),
-    /// otherwise a time-dependent heuristic can expand a node from a non-optimal path.
+    /// The queue is ordered by `f = g + h`, computed once per queued path. Ties on `f` go
+    /// to the smaller `g` (via `cmp`, i.e. `D`), otherwise a time-dependent heuristic can
+    /// expand a node from a non-optimal path.
+    /// Without a single target (e.g. `DestAll`), `f` is 0 and only `D` orders the queue.
     #[inline(always)]
-    fn cmp_queue(
-        first: &PathFragment<'id>,
-        second: &PathFragment<'id>,
+    fn queue_priority(
+        path: &PathFragment<'id>,
         graph: &Multigraph<'id, NM, CM>,
-        bundle: &Bundle,
+        _bundle: &Bundle,
         destination: &De,
-    ) -> Ordering {
+    ) -> Date {
         let Some(target) = destination.to_id(graph) else {
-            return D::cmp_queue(first, second, graph, bundle, destination);
+            return 0;
         };
         let target_nodeid = graph.routable_index_to_nodeid(target);
-
-        let f1 = first
-            .recv
+        path.recv
             .end
-            .saturating_add(NM::get_heuristic(first, graph, target_nodeid));
-        let f2 = second
-            .recv
-            .end
-            .saturating_add(NM::get_heuristic(second, graph, target_nodeid));
-
-        f1.cmp(&f2)
-            .then_with(|| D::cmp_queue(first, second, graph, bundle, destination))
+            .saturating_add(NM::get_heuristic(path, graph, target_nodeid))
     }
 }
 
