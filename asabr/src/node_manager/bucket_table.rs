@@ -302,7 +302,12 @@ mod tests {
     #[test]
     fn destinations_computed_on_demand() {
         let table = table();
-        assert!(table.buckets_per_dest.iter().all(|cell| cell.get().is_none()));
+        assert!(
+            table
+                .buckets_per_dest
+                .iter()
+                .all(|cell| cell.get().is_none())
+        );
 
         assert_eq!(table.bound(S, G, 15), 20);
         assert!(table.buckets_per_dest[G].get().is_some());
@@ -310,7 +315,12 @@ mod tests {
         assert!(table.buckets_per_dest[R].get().is_none());
 
         table.compute_for_dests(&[S, R]);
-        assert!(table.buckets_per_dest.iter().all(|cell| cell.get().is_some()));
+        assert!(
+            table
+                .buckets_per_dest
+                .iter()
+                .all(|cell| cell.get().is_some())
+        );
     }
 
     #[test]

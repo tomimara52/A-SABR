@@ -16,7 +16,7 @@ use crate::types::{Date, NodeID, TimeInterval};
 use super::NodeManager;
 use super::bucket_table::BucketTable;
 
-/// `NodeManager` that behaves like `NoManagement` except that it 
+/// `NodeManager` that behaves like `NoManagement` except that it
 /// divides the contact plan in buckets of equal duration and precomputes
 /// reachability between those buckets
 #[derive(Debug, Clone, Default)]
