@@ -31,11 +31,14 @@ use a_sabr::{
     contact_plan::ContactPlan,
     distance::{astar::AStar, sabr::SABR},
     multigraph::{Multigraph, RoutableNodeRef},
-    node_manager::{NodeManager, bucket_heuristic::BucketHeuristicManager, none::NoManagement},
+    node_manager::{bucket_heuristic::BucketHeuristicManager, none::NoManagement},
     pathfinding::{ContactParenting, HybridParenting, NodeParenting, Pathfinding},
     types::Date,
 };
-use common::{CM, CountedContactParenting, CountedHybridParenting, CountedNodeParenting, DelayNM};
+use common::{
+    CM, CountedContactParenting, CountedHybridParenting, CountedNodeParenting, DelayNM, Query,
+    env_or,
+};
 use generativity::make_guard;
 
 type BucketNM = BucketHeuristicManager<NoManagement>;
@@ -46,14 +49,6 @@ const BUNDLE: Bundle = Bundle {
     expiration: Date::MAX,
 };
 const BUCKET_COUNTS: [usize; 5] = [64, 256, 512, 1024, 4096];
-
-/// A routing request.
-#[derive(Clone, Copy)]
-struct Query {
-    source: usize,
-    dest: usize,
-    time: Date,
-}
 
 /// Result of one query with one pathfinder.
 struct Row {
@@ -67,45 +62,6 @@ struct Row {
     first_ns: u128,
     warm_ns: u128,
     first_to_dest: bool,
-}
-
-/// SplitMix64, so the queries only depend on the seed.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
-    }
-}
-
-/// `n` queries between two different `endpoints`, starting uniformly in `span`.
-fn sample_queries(rng: &mut Rng, endpoints: &[usize], span: (Date, Date), n: usize) -> Vec<Query> {
-    let (start, end) = span;
-    (0..n)
-        .map(|_| {
-            let source = endpoints[rng.below(endpoints.len())];
-            let dest = loop {
-                let dest = endpoints[rng.below(endpoints.len())];
-                if dest != source {
-                    break dest;
-                }
-            };
-            let time = start + (rng.next() % (end - start) as u64) as Date;
-            Query { source, dest, time }
-        })
-        .collect()
-}
-
-fn env_or(var: &str, default: usize) -> usize {
-    std::env::var(var).map_or(default, |v| v.parse().unwrap())
 }
 
 fn median(values: &mut [u128]) -> u128 {
@@ -342,42 +298,17 @@ fn write_csv(rows: &[Row]) {
     println!("\nwritten to {}", path.display());
 }
 
-/// The queries of `name`, unless `SWEEP_PLANS` excludes it. Each plan has its own random
-/// stream (seed and plan name), so excluding plans does not change the others' queries.
-fn queries<NM: NodeManager>(
-    name: &'static str,
-    plan: &ContactPlan<NM, CM>,
-    endpoints: &[usize],
-) -> Option<Vec<Query>> {
-    if let Ok(plans) = std::env::var("SWEEP_PLANS")
-        && !plans.split(',').any(|p| p == name)
-    {
-        return None;
-    }
-    // FNV-1a of the name
-    let name_hash = name.bytes().fold(0xCBF2_9CE4_8422_2325_u64, |h, b| {
-        (h ^ b as u64).wrapping_mul(0x100_0000_01B3)
-    });
-    let mut rng = Rng(env_or("SWEEP_SEED", 1) as u64 ^ name_hash);
-    let n = env_or("SWEEP_QUERIES", 100);
-    eprintln!("sweeping {name}");
-    Some(sample_queries(
-        &mut rng,
-        endpoints,
-        common::plan_span(plan),
-        n,
-    ))
-}
-
 fn main() {
     let reps = env_or("SWEEP_REPS", 5);
     let mut rows = Vec::new();
     let mut plans = Vec::new();
 
     // ---- 100.cp: between any two nodes, also with the delay heuristic ----
-    let plan = common::load_100cp();
-    let nodes: Vec<usize> = (0..plan.realnodes.len()).collect();
-    if let Some(queries) = queries("100cp", &plan, &nodes) {
+    if common::plan_selected("100cp") {
+        eprintln!("sweeping 100cp");
+        let plan = common::load_100cp();
+        let nodes: Vec<usize> = (0..plan.realnodes.len()).collect();
+        let queries = common::plan_queries("100cp", &plan, &nodes);
         sweep_plan(&mut rows, reps, "100cp", &queries, &plan);
         let delay_plan = common::load_100cp_delay();
         sweep_parentings!(
@@ -395,17 +326,14 @@ fn main() {
 
     // ---- LEO Ring Roads: between two ground stations ----
     for (name, path, zero_delays) in common::LEO_PLANS {
-        let (plan, names) = common::load_tvg(path, zero_delays);
-        let stations: Vec<usize> = names
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| n.starts_with("gs"))
-            .map(|(i, _)| i)
-            .collect();
-        if let Some(queries) = queries(name, &plan, &stations) {
-            sweep_plan(&mut rows, reps, name, &queries, &plan);
-            plans.push(name);
+        if !common::plan_selected(name) {
+            continue;
         }
+        eprintln!("sweeping {name}");
+        let (plan, names) = common::load_tvg(path, zero_delays);
+        let queries = common::plan_queries(name, &plan, &common::ground_stations(&names));
+        sweep_plan(&mut rows, reps, name, &queries, &plan);
+        plans.push(name);
     }
 
     for plan in plans {

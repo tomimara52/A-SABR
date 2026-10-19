@@ -138,6 +138,87 @@ pub fn plan_span<NM: a_sabr::node_manager::NodeManager>(
     (start.unwrap(), end.unwrap())
 }
 
+/// A routing request: source and destination node IDs, and start time.
+#[derive(Clone, Copy)]
+pub struct Query {
+    pub source: usize,
+    pub dest: usize,
+    pub time: Date,
+}
+
+/// SplitMix64, so the queries only depend on the seed.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// `n` queries between two different `endpoints`, starting uniformly in `span`.
+fn sample_queries(rng: &mut Rng, endpoints: &[usize], span: (Date, Date), n: usize) -> Vec<Query> {
+    let (start, end) = span;
+    (0..n)
+        .map(|_| {
+            let source = endpoints[rng.below(endpoints.len())];
+            let dest = loop {
+                let dest = endpoints[rng.below(endpoints.len())];
+                if dest != source {
+                    break dest;
+                }
+            };
+            let time = start + (rng.next() % (end - start) as u64) as Date;
+            Query { source, dest, time }
+        })
+        .collect()
+}
+
+/// The value of the environment variable `var`, or `default` if it is not set.
+pub fn env_or(var: &str, default: usize) -> usize {
+    std::env::var(var).map_or(default, |v| v.parse().unwrap())
+}
+
+/// Whether `SWEEP_PLANS` (comma-separated plan names, default: all) includes `name`.
+pub fn plan_selected(name: &str) -> bool {
+    std::env::var("SWEEP_PLANS").map_or(true, |plans| plans.split(',').any(|p| p == name))
+}
+
+/// `SWEEP_QUERIES` (default 100) queries of the plan `name` between two different
+/// `endpoints`, starting uniformly over the span of `plan`. Each plan has its own random
+/// stream (`SWEEP_SEED`, default 1, and the plan name), so selecting plans does not
+/// change the others' queries.
+pub fn plan_queries<NM: NodeManager>(
+    name: &str,
+    plan: &ContactPlan<NM, CM>,
+    endpoints: &[usize],
+) -> Vec<Query> {
+    // FNV-1a of the name
+    let name_hash = name.bytes().fold(0xCBF2_9CE4_8422_2325_u64, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x100_0000_01B3)
+    });
+    let mut rng = Rng(env_or("SWEEP_SEED", 1) as u64 ^ name_hash);
+    let n = env_or("SWEEP_QUERIES", 100);
+    sample_queries(&mut rng, endpoints, plan_span(plan), n)
+}
+
+/// Indices of the ground stations (`gs...`) among the node `names` of a LEO plan.
+pub fn ground_stations(names: &[String]) -> Vec<usize> {
+    names
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.starts_with("gs"))
+        .map(|(i, _)| i)
+        .collect()
+}
+
 thread_local! {
     static EXPANDED: Cell<usize> = const { Cell::new(0) };
 }

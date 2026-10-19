@@ -6,7 +6,7 @@ use crate::{
     node_manager::NodeManager,
     types::{Date, Duration},
 };
-use alloc::{vec, vec::Vec};
+use alloc::{boxed::Box, vec, vec::Vec};
 use core::cell::OnceCell;
 
 /// Marks a (node, bucket) from which the destination cannot be reached.
@@ -30,11 +30,13 @@ pub struct BucketTable {
     t0: Date,
     width: Duration,
     n_buckets: usize,
+    n_nodes: usize,
     /// `in_edges[k][rx] = [tx_, ...]`  
     /// means there is a contact (tx -> rx) overlapping with bucket k
     in_edges: Vec<Vec<Vec<usize>>>,
-    /// `buckets_per_dest[dest][k][node] = B(node, k)`, empty until `dest` is needed.
-    buckets_per_dest: Vec<OnceCell<Vec<Vec<u16>>>>,
+    /// `buckets_per_dest[dest][k * n_nodes + node] = B(node, k)`, empty until `dest` is
+    /// needed. Each table is a single array, a row of `n_nodes` per bucket.
+    buckets_per_dest: Vec<OnceCell<Box<[u16]>>>,
 }
 
 impl BucketTable {
@@ -60,6 +62,7 @@ impl BucketTable {
             t0,
             width,
             n_buckets,
+            n_nodes: contact_plan.realnodes.len(),
             in_edges: Vec::new(),
             buckets_per_dest: vec![OnceCell::new(); contact_plan.realnodes.len()],
         };
@@ -94,16 +97,16 @@ impl BucketTable {
     }
 
     /// Table of `dest`, computed on first access. `None` if `dest` is not a real node.
-    fn dest_table(&self, dest: usize) -> Option<&Vec<Vec<u16>>> {
+    fn dest_table(&self, dest: usize) -> Option<&[u16]> {
         let cell = self.buckets_per_dest.get(dest)?;
         // the table for a `dest` is only computed when first needed
         Some(cell.get_or_init(|| self.compute_table(dest)))
     }
 
     /// Computes `B(node, k)` for every node and bucket, for one destination.
-    fn compute_table(&self, dest: usize) -> Vec<Vec<u16>> {
-        let n_nodes = self.buckets_per_dest.len();
-        let mut table = vec![vec![UNREACHABLE; n_nodes]; self.n_buckets];
+    fn compute_table(&self, dest: usize) -> Box<[u16]> {
+        let n_nodes = self.n_nodes;
+        let mut table = vec![UNREACHABLE; self.n_buckets * n_nodes];
 
         // buffers reused across buckets
         let mut labels = vec![UNREACHABLE; n_nodes];
@@ -114,7 +117,7 @@ impl BucketTable {
         for k in (0..self.n_buckets).rev() {
             // L(m) = B(m, k + 1), except the destination which is reached in bucket k
             if k + 1 < self.n_buckets {
-                labels.copy_from_slice(&table[k + 1]);
+                labels.copy_from_slice(&table[(k + 1) * n_nodes..(k + 2) * n_nodes]);
             } else {
                 labels.fill(UNREACHABLE);
             }
@@ -126,7 +129,7 @@ impl BucketTable {
             order.sort_unstable_by_key(|&m| labels[m]);
             visited.fill(false);
 
-            let row = &mut table[k];
+            let row = &mut table[k * n_nodes..(k + 1) * n_nodes];
             for &m in &order {
                 if visited[m] {
                     continue;
@@ -147,7 +150,7 @@ impl BucketTable {
             }
         }
 
-        table
+        table.into_boxed_slice()
     }
 
     /// Lower bound on the arrival date at `dest` for a bundle held at `node` at `t`.
@@ -158,11 +161,13 @@ impl BucketTable {
         let Some(table) = self.dest_table(dest) else {
             return t;
         };
+        if node >= self.n_nodes {
+            return t;
+        }
         // Past the last bucket we keep using it: contacts after `tf` were clamped into it.
-        match table[self.bucket(t)].get(node) {
-            Some(&UNREACHABLE) => Date::MAX,
-            Some(&b) => t.max(self.t0 + b as Date * self.width),
-            None => t,
+        match table[self.bucket(t) * self.n_nodes + node] {
+            UNREACHABLE => Date::MAX,
+            b => t.max(self.t0 + b as Date * self.width),
         }
     }
 
@@ -281,7 +286,11 @@ mod tests {
     fn table_values() {
         let table = table();
         let t = table.dest_table(G).unwrap();
-        let column = |n: usize| t.iter().map(|row| row[n]).collect::<Vec<_>>();
+        let column = |n: usize| {
+            t.chunks(table.n_nodes)
+                .map(|row| row[n])
+                .collect::<Vec<_>>()
+        };
         assert_eq!(column(S), vec![2, 2, 2, INF]);
         assert_eq!(column(R), vec![3, 3, 3, 3]);
         assert_eq!(column(G), vec![0, 1, 2, 3]);
